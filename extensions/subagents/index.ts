@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { Message } from "@mariozechner/pi-ai";
 import { type ExtensionAPI, getAgentDir, parseFrontmatter, SessionManager } from "@mariozechner/pi-coding-agent";
+import { Type } from "typebox";
 
 const SUBAGENT_SESSION = "subagent-session";
 const SUBAGENT_CHILD = "subagent-child";
@@ -447,6 +448,20 @@ function formatSubagentMessage(agent: AgentConfig, task: string, result: Subagen
 	].join("\n");
 }
 
+function formatSubagentToolText(agent: AgentConfig, task: string, result: SubagentResult): string {
+	const status = result.exitCode === 0 ? "OK" : `ERROR exitCode=${result.exitCode}`;
+	const body = result.output || result.stderr || "(empty output)";
+	return [
+		`Subagent: ${agent.name}`,
+		`Status: ${status}`,
+		`Task: ${task || "(no additional task)"}`,
+		`Child session: ${result.childSession}`,
+		"",
+		"Subagent output:",
+		body,
+	].join("\n");
+}
+
 function cancelRunningJobs(reason: string): void {
 	for (const job of jobs.values()) {
 		if (job.status !== "running") continue;
@@ -459,14 +474,7 @@ function cancelRunningJobs(reason: string): void {
 	}
 }
 
-async function startAgent(pi: ExtensionAPI, agentName: string, task: string, ctx: any): Promise<void> {
-	const agent = findAgent(agentName, ctx.cwd);
-	if (!agent) {
-		const available = loadAgents(ctx.cwd).map((a) => a.name).join(", ") || "none";
-		ctx.ui.notify(`Unknown subagent: ${agentName}. Available: ${available}`, "error");
-		return;
-	}
-
+function createSubagentJob(pi: ExtensionAPI, agent: AgentConfig, task: string, ctx: any): SubagentJob {
 	const mainModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
 	const contextWindow = typeof ctx.model?.contextWindow === "number" ? ctx.model.contextWindow : undefined;
 	const thinkingLevel = pi.getThinkingLevel();
@@ -494,9 +502,50 @@ async function startAgent(pi: ExtensionAPI, agentName: string, task: string, ctx
 		events: [],
 	};
 	jobs.set(job.id, job);
-
 	pushJobEvent(job, `started on ${mainModel ?? "default model"}`);
-	ctx.ui.notify(`Started subagent ${agent.name} [${job.id}]${mainModel ? ` on ${mainModel}` : ""}`, "info");
+	return job;
+}
+
+async function runAgentForResult(pi: ExtensionAPI, agent: AgentConfig, task: string, ctx: any, signal?: AbortSignal): Promise<SubagentResult> {
+	const job = createSubagentJob(pi, agent, task, ctx);
+	startSubagentStatus(ctx);
+
+	const abort = () => {
+		if (job.status !== "running") return;
+		job.status = "cancelled";
+		pushJobEvent(job, "aborted");
+		job.proc?.kill("SIGTERM");
+		setTimeout(() => {
+			if (job.proc && !job.proc.killed) job.proc.kill("SIGKILL");
+		}, 5000);
+	};
+	if (signal?.aborted) abort();
+	else signal?.addEventListener("abort", abort, { once: true });
+
+	try {
+		const result = await runSubagent(job);
+		job.result = result;
+		if (job.status === "cancelled") throw new Error(`Subagent ${agent.name} was cancelled`);
+		job.status = result.exitCode === 0 ? "done" : "error";
+		pushJobEvent(job, `finished exitCode=${result.exitCode}`);
+		updateSubagentStatus();
+		return result;
+	} finally {
+		signal?.removeEventListener("abort", abort);
+		updateSubagentStatus();
+	}
+}
+
+async function startAgent(pi: ExtensionAPI, agentName: string, task: string, ctx: any): Promise<void> {
+	const agent = findAgent(agentName, ctx.cwd);
+	if (!agent) {
+		const available = loadAgents(ctx.cwd).map((a) => a.name).join(", ") || "none";
+		ctx.ui.notify(`Unknown subagent: ${agentName}. Available: ${available}`, "error");
+		return;
+	}
+
+	const job = createSubagentJob(pi, agent, task, ctx);
+	ctx.ui.notify(`Started subagent ${agent.name} [${job.id}]${job.model ? ` on ${job.model}` : ""}`, "info");
 	startSubagentStatus(ctx);
 
 	void (async () => {
@@ -520,8 +569,8 @@ async function startAgent(pi: ExtensionAPI, agentName: string, task: string, ctx
 						exitCode: result.exitCode,
 						stderr: result.stderr,
 						agentFile: agent.filePath,
-						model: mainModel,
-						thinkingLevel,
+						model: job.model,
+						thinkingLevel: job.thinkingLevel,
 						childSession: result.childSession,
 						jobId: job.id,
 					},
@@ -569,6 +618,63 @@ export default function (pi: ExtensionAPI) {
 		].join("\n");
 
 		return { systemPrompt: `${event.systemPrompt}\n\n${subagentPrompt}` };
+	});
+
+	pi.registerTool({
+		name: "subagent",
+		label: "Subagent",
+		description: "Run a named subagent in an isolated child session and return its result.",
+		promptSnippet: "Run a named subagent in an isolated child session",
+		promptGuidelines: [
+			"Use subagent when a specialized agent is better suited than the main agent, for example tester for test execution or reviewer for code review.",
+			"Do not use subagent from inside another subagent; subagent tools are intended for the main agent only.",
+		],
+		parameters: Type.Object({
+			agent: Type.String({ description: "Name of the subagent to run, e.g. tester or reviewer" }),
+			task: Type.String({ description: "Task to delegate to the subagent" }),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (getSubagentSessionMeta(ctx.sessionManager)) throw new Error("Nested subagent execution is disabled.");
+			const agent = findAgent(params.agent, ctx.cwd);
+			if (!agent) {
+				const available = loadAgents(ctx.cwd).map((a) => a.name).join(", ") || "none";
+				throw new Error(`Unknown subagent: ${params.agent}. Available agents: ${available}.`);
+			}
+			const result = await runAgentForResult(pi, agent, params.task, ctx, signal);
+			return {
+				content: [{ type: "text", text: formatSubagentToolText(agent, params.task, result) }],
+				details: { agent: agent.name, task: params.task, result },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "tester",
+		label: "Tester",
+		description: "Run the tester subagent to discover and execute the project's tests or validation process.",
+		promptSnippet: "Run the tester subagent to execute project tests/validation and report failures",
+		promptGuidelines: [
+			"Use tester when the user asks to run tests, validate the project, check CI-equivalent commands, or investigate failing tests.",
+			"tester returns test commands, pass/fail status, and logs around failures so the main agent can act on them.",
+		],
+		parameters: Type.Object({
+			task: Type.Optional(
+				Type.String({
+					description: "Optional test task or scope. Defaults to discovering and running the appropriate project validation.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (getSubagentSessionMeta(ctx.sessionManager)) throw new Error("Nested tester execution is disabled.");
+			const agent = findAgent("tester", ctx.cwd);
+			if (!agent) throw new Error("Tester agent not found. Create ~/.pi/agent/agents/tester.md or .pi/agents/tester.md.");
+			const task = params.task?.trim() || "Discover and run the appropriate project tests or validation process. Return pass/fail status and useful logs for any failures.";
+			const result = await runAgentForResult(pi, agent, task, ctx, signal);
+			return {
+				content: [{ type: "text", text: formatSubagentToolText(agent, task, result) }],
+				details: { agent: agent.name, task, result },
+			};
+		},
 	});
 
 	pi.registerCommand("agent", {

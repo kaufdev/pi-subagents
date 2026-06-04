@@ -11,13 +11,13 @@ Subagents run in a separate pi process with their own child session, so they do 
 From GitHub:
 
 ```bash
-pi install git:github.com/kaufdev/pi-subagents@v0.1.0
+pi install git:github.com/kaufdev/pi-subagents@v0.1.2
 ```
 
 For pidocker:
 
 ```bash
-pidocker packages add git:github.com/kaufdev/pi-subagents@v0.1.0
+pidocker packages add git:github.com/kaufdev/pi-subagents@v0.1.2
 ```
 
 ## Agent files
@@ -58,6 +58,16 @@ Or use the generic command:
 ```
 
 The parent session receives the subagent result. The result includes the child session path for later inspection via pi's normal session tools.
+
+
+## Tools
+
+This package also registers tools for the main agent:
+
+- `subagent` - run any named subagent with `{ agent, task }`
+- `tester` - convenience tool that runs the `tester` subagent
+
+The tools are intended for the parent/main agent. Nested subagent calls from inside a subagent are blocked.
 
 ## What is isolated?
 

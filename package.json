@@ -1,6 +1,6 @@
 {
 	"name": "@kaufdev/pi-subagents",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Subagent extension for pi",
 	"keywords": [
 		"pi-package"
