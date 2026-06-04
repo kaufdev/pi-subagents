@@ -1,6 +1,6 @@
 # pi-subagents
 
-Subagent extension for [pi](https://pi.dev). It lets you define named agents as Markdown files and run them manually from pi slash commands.
+Subagent extension for [pi](https://pi.dev). It lets you define named agents as Markdown files and run them from pi slash commands or expose selected agents as tools for the main agent.
 
 Subagents run in a separate pi process with their own child session, so they do not see the parent conversation history. They still load normal pi project context (`AGENTS.md` / `CLAUDE.md`), skills, extensions, and tools.
 
@@ -35,6 +35,9 @@ Example:
 ---
 name: reviewer
 description: Review code and report risks
+tool: true
+toolWhen: Use reviewer when the user asks for code review, implementation review, risk analysis, or checking code quality.
+defaultTask: Review the current changes and report concrete findings with file paths and line numbers when possible.
 ---
 
 You are a reviewer. Check code quality, bugs, and application-level fit.
@@ -42,6 +45,17 @@ Return concrete findings with file paths and line numbers where possible.
 ```
 
 After adding/changing agents, run `/reload` in pi.
+
+Optional tool frontmatter:
+
+- `tool: true` - expose this agent as a tool callable by the main agent.
+- `toolName` - override the tool name. Defaults to `name`.
+- `toolLabel` - override the displayed label.
+- `toolDescription` - override the tool description. Defaults to the agent description.
+- `toolPromptSnippet` - one-line entry for Pi's available-tools prompt.
+- `toolWhen` or `toolGuidelines` - semicolon-separated, YAML list, or multiline guidance telling the model when to use the tool.
+- `defaultTask` - task used when the tool is called without an explicit `task`.
+- `taskDescription` - schema description for the optional `task` argument.
 
 ## Usage
 
@@ -62,10 +76,11 @@ The parent session receives the subagent result. The result includes the child s
 
 ## Tools
 
-This package also registers tools for the main agent:
+This package always registers one generic tool for the main agent:
 
 - `subagent` - run any named subagent with `{ agent, task }`
-- `tester` - convenience tool that runs the `tester` subagent
+
+Agents with `tool: true` in frontmatter are also registered as dedicated tools. For example, a `tester.md` file with `name: tester` and `tool: true` registers a `tester` tool automatically. The model decides whether to call these tools based on each tool's description and `toolWhen` guidance.
 
 The tools are intended for the parent/main agent. Nested subagent calls from inside a subagent are blocked.
 

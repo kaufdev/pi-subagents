@@ -9,11 +9,23 @@ import { Type } from "typebox";
 const SUBAGENT_SESSION = "subagent-session";
 const SUBAGENT_CHILD = "subagent-child";
 
+interface AgentToolConfig {
+	enabled: boolean;
+	name: string;
+	label?: string;
+	description?: string;
+	promptSnippet?: string;
+	guidelines: string[];
+	defaultTask?: string;
+	taskDescription?: string;
+}
+
 interface AgentConfig {
 	name: string;
 	description: string;
 	systemPrompt: string;
 	filePath: string;
+	tool?: AgentToolConfig;
 }
 
 interface SubagentSessionMeta {
@@ -59,6 +71,47 @@ let statusCtx: any | undefined;
 let statusTimer: ReturnType<typeof setInterval> | undefined;
 let statusFrame = 0;
 
+function getString(value: unknown): string | undefined {
+	return typeof value === "string" ? value.trim() : undefined;
+}
+
+function parseBoolean(value: unknown): boolean {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "number") return value !== 0;
+	const text = getString(value);
+	if (!text) return false;
+	return ["1", "true", "yes", "on"].includes(text.toLowerCase());
+}
+
+function parseList(value: unknown): string[] {
+	if (Array.isArray(value)) return value.map((item) => getString(item)).filter(Boolean) as string[];
+	const text = getString(value);
+	if (!text) return [];
+	return text
+		.split(/\r?\n|;/)
+		.map((item) => item.trim())
+		.filter(Boolean);
+}
+
+function makeToolConfig(agentName: string, description: string, frontmatter: Record<string, unknown>): AgentToolConfig | undefined {
+	if (!parseBoolean(frontmatter.tool)) return undefined;
+
+	const toolName = getString(frontmatter.toolName) || agentName;
+	if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(toolName)) return undefined;
+
+	const guidelines = parseList(frontmatter.toolWhen ?? frontmatter.toolGuidelines);
+	return {
+		enabled: true,
+		name: toolName,
+		label: getString(frontmatter.toolLabel),
+		description: getString(frontmatter.toolDescription) || `Run the ${agentName} subagent. ${description}`,
+		promptSnippet: getString(frontmatter.toolPromptSnippet),
+		guidelines,
+		defaultTask: getString(frontmatter.defaultTask),
+		taskDescription: getString(frontmatter.taskDescription),
+	};
+}
+
 function loadAgentsFromDir(dir: string): AgentConfig[] {
 	if (!fs.existsSync(dir)) return [];
 
@@ -82,14 +135,19 @@ function loadAgentsFromDir(dir: string): AgentConfig[] {
 			continue;
 		}
 
-		const { frontmatter, body } = parseFrontmatter<Record<string, string>>(content);
-		if (!frontmatter.name) continue;
+		const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+		const rawName = getString(frontmatter.name);
+		if (!rawName) continue;
+
+		const name = rawName;
+		const description = getString(frontmatter.description) || `Subagent ${name}`;
 
 		agents.push({
-			name: frontmatter.name,
-			description: frontmatter.description ?? `Subagent ${frontmatter.name}`,
+			name,
+			description,
 			systemPrompt: body.trim(),
 			filePath,
+			tool: makeToolConfig(name, description, frontmatter),
 		});
 	}
 
@@ -648,34 +706,44 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
-		name: "tester",
-		label: "Tester",
-		description: "Run the tester subagent to discover and execute the project's tests or validation process.",
-		promptSnippet: "Run the tester subagent to execute project tests/validation and report failures",
-		promptGuidelines: [
-			"Use tester when the user asks to run tests, validate the project, check CI-equivalent commands, or investigate failing tests.",
-			"tester returns test commands, pass/fail status, and logs around failures so the main agent can act on them.",
-		],
-		parameters: Type.Object({
-			task: Type.Optional(
-				Type.String({
-					description: "Optional test task or scope. Defaults to discovering and running the appropriate project validation.",
+	const reservedAgentToolNames = new Set(["subagent", "read", "bash", "edit", "write", "grep", "find", "ls"]);
+	const registeredAgentTools = new Set<string>();
+	const registerAgentTools = (cwd?: string) => {
+		for (const agent of loadAgents(cwd)) {
+			const tool = agent.tool;
+			if (!tool?.enabled) continue;
+			if (reservedAgentToolNames.has(tool.name) || registeredAgentTools.has(tool.name)) continue;
+			if (pi.getAllTools().some((existing) => existing.name === tool.name)) continue;
+			registeredAgentTools.add(tool.name);
+
+			const defaultTask = tool.defaultTask;
+			pi.registerTool({
+				name: tool.name,
+				label: tool.label || agent.name,
+				description: tool.description || `Run the ${agent.name} subagent. ${agent.description}`,
+				promptSnippet: tool.promptSnippet || `Run the ${agent.name} subagent`,
+				promptGuidelines: tool.guidelines.length > 0 ? tool.guidelines : undefined,
+				parameters: Type.Object({
+					task: Type.Optional(
+						Type.String({
+							description: tool.taskDescription || "Optional task or scope for the subagent.",
+						}),
+					),
 				}),
-			),
-		}),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			if (getSubagentSessionMeta(ctx.sessionManager)) throw new Error("Nested tester execution is disabled.");
-			const agent = findAgent("tester", ctx.cwd);
-			if (!agent) throw new Error("Tester agent not found. Create ~/.pi/agent/agents/tester.md or .pi/agents/tester.md.");
-			const task = params.task?.trim() || "Discover and run the appropriate project tests or validation process. Return pass/fail status and useful logs for any failures.";
-			const result = await runAgentForResult(pi, agent, task, ctx, signal);
-			return {
-				content: [{ type: "text", text: formatSubagentToolText(agent, task, result) }],
-				details: { agent: agent.name, task, result },
-			};
-		},
-	});
+				async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+					if (getSubagentSessionMeta(ctx.sessionManager)) throw new Error(`Nested ${tool.name} execution is disabled.`);
+					const currentAgent = findAgent(agent.name, ctx.cwd);
+					if (!currentAgent) throw new Error(`Agent ${agent.name} not found. Create ~/.pi/agent/agents/${agent.name}.md or .pi/agents/${agent.name}.md.`);
+					const task = params.task?.trim() || defaultTask || `Run the ${currentAgent.name} subagent for the appropriate task.`;
+					const result = await runAgentForResult(pi, currentAgent, task, ctx, signal);
+					return {
+						content: [{ type: "text", text: formatSubagentToolText(currentAgent, task, result) }],
+						details: { agent: currentAgent.name, task, result },
+					};
+				},
+			});
+		}
+	};
 
 	pi.registerCommand("agent", {
 		description: "Run a subagent by name: /agent <name> <task>",
@@ -708,6 +776,7 @@ export default function (pi: ExtensionAPI) {
 
 	registerAgentCommands();
 	pi.on("session_start", (_event, ctx) => {
+		registerAgentTools(ctx.cwd);
 		registerAgentCommands(ctx.cwd);
 	});
 }
