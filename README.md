@@ -11,13 +11,13 @@ Subagents run in a separate pi process with their own child session, so they do 
 From GitHub:
 
 ```bash
-pi install git:github.com/kaufdev/pi-subagents@v0.1.2
+pi install git:github.com/kaufdev/pi-subagents@v0.1.3
 ```
 
 For pidocker:
 
 ```bash
-pidocker packages add git:github.com/kaufdev/pi-subagents@v0.1.2
+pidocker packages add git:github.com/kaufdev/pi-subagents@v0.1.3
 ```
 
 ## Agent files
