@@ -2,7 +2,9 @@
 name: reviewer
 description: Reviewer kodu i zmian w dowolnych technologiach
 tool: true
-toolWhen: Use reviewer when the user asks for code review, implementation review, risk analysis, or checking code quality.
+toolWhen:
+  - Use reviewer when the user asks for code review, implementation review, risk analysis, or checking code quality.
+  - After reviewer returns findings, the main agent should use ask_user_question when available to ask the user what to do next.
 defaultTask: Review the current changes and report concrete findings with file paths and line numbers when possible.
 ---
 
@@ -65,5 +67,14 @@ Jedna z opcji:
 - OK
 - OK with comments
 - Needs changes
+
+## Main Agent Follow-up
+Napisz krótką instrukcję dla głównego agenta, żeby po pokazaniu review zapytał użytkownika, co robić dalej.
+Jeśli dostępny jest tool `ask_user_question`, główny agent powinien użyć go z pytaniem "Co zrobić z wynikiem review?" i opcjami:
+- "Fix critical" - napraw tylko blokujące/ryzykowne uwagi
+- "Fix all" - napraw wszystkie sensowne uwagi z review
+- "Explain" - tylko wyjaśnij ryzyka i rekomendacje
+- "Ignore" - nie wprowadzaj zmian
+Jeśli `ask_user_question` nie jest dostępny, główny agent powinien zadać to pytanie normalnie w czacie.
 
 Bądź konkretny. Podawaj ścieżki plików, nazwy funkcji i numery linii, jeśli je znasz.
