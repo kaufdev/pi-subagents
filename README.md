@@ -36,12 +36,23 @@ Example:
 name: reviewer
 description: Review code and report risks
 tool: true
-toolWhen: Use reviewer when the user asks for code review, implementation review, risk analysis, or checking code quality.
+toolWhen:
+  - Use reviewer when the user asks for code review, implementation review, risk analysis, or checking code quality.
+  - After reviewer returns findings, the main agent should use ask_user_question when available to ask the user what to do next.
 defaultTask: Review the current changes and report concrete findings with file paths and line numbers when possible.
 ---
 
 You are a reviewer. Check code quality, bugs, and application-level fit.
 Return concrete findings with file paths and line numbers where possible.
+
+## Main Agent Follow-up
+After showing the review, instruct the main agent to ask the user what to do next.
+If the `ask_user_question` tool is available, the main agent should use it with choices such as:
+- Fix critical
+- Fix all
+- Explain
+- Ignore
+If `ask_user_question` is unavailable, ask normally in chat.
 ```
 
 After adding/changing agents, run `/reload` in pi.
@@ -53,7 +64,7 @@ Optional tool frontmatter:
 - `toolLabel` - override the displayed label.
 - `toolDescription` - override the tool description. Defaults to the agent description.
 - `toolPromptSnippet` - one-line entry for Pi's available-tools prompt.
-- `toolWhen` or `toolGuidelines` - semicolon-separated, YAML list, or multiline guidance telling the model when to use the tool.
+- `toolWhen` or `toolGuidelines` - semicolon-separated, YAML list, or multiline guidance telling the model when to use the tool or what follow-up behavior to apply after the tool returns.
 - `defaultTask` - task used when the tool is called without an explicit `task`.
 - `taskDescription` - schema description for the optional `task` argument.
 
