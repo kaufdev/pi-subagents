@@ -1,0 +1,10 @@
+{
+  "name": "@kaufdev/pi-subagents",
+  "version": "0.1.0",
+  "description": "Subagent extension for pi",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/subagents/index.ts"]
+  }
+}
